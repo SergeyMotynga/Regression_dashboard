@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import asyncio
+import matplotlib.pyplot as plt
+import numpy as np
 from dashboard.data_processing.info_about_dataframe import info_about_dataframe
 from dashboard.data_processing.render_main_panel import render_main_panel
 from dashboard.processing.linearRegressionModel import LinearRegressionModel
@@ -32,6 +34,8 @@ def render_data_overview(df: pd.DataFrame, outlier_percentage: float) -> None:
 def render_prediction_func(df: pd.DataFrame):
     st.markdown("<h3 style='text-align: center;'>Вывод формулы</h3>", unsafe_allow_html=True)
 
+    # Используем отфильтрованные данные
+    filtered_df = st.session_state.get('filtered_df', df)
     selected_sensors = st.session_state.get('selected_sensors', df.columns.tolist())
     equation_cols = st.columns([4,4])
 
@@ -56,13 +60,13 @@ def render_prediction_func(df: pd.DataFrame):
         )
     if second_options:
         model = LinearRegressionModel()
-        model.fit(df[second_options], df[selected_aim_option], target_name=selected_aim_option)
+        model.fit(filtered_df[second_options], filtered_df[selected_aim_option], target_name=selected_aim_option)
 
          # Сохраняем модель в session_state
         st.session_state['trained_model'] = model
         st.session_state['equation_origin'] = model.get_equation(latex_output=True)
 
-        
+
         return second_options
     else:
         st.info("Выберите хотябы один призднак для построения уравнения")
@@ -196,7 +200,108 @@ def render_forecasting_page(df: pd.DataFrame, outlier_percentage: float) -> None
         with col2:
             if st.session_state.get('trained_model'):
                 model = st.session_state['trained_model']
-                metrics = pd.DataFrame([model.evaluate()]).T
-                metrics.reset_index(inplace=True)
-                metrics.columns = ['Метрика', 'Значение']
-                st.dataframe(metrics, use_container_width=True, hide_index=True)
+                metrics = model.evaluate()
+
+                # Отображение метрик с пояснениями
+                st.markdown("### Метрики качества")
+
+                # R² Score с цветовой индикацией
+                r2 = metrics['R2']
+                if r2 >= 0.9:
+                    r2_color = "green"
+                    r2_interpretation = "Отлично"
+                elif r2 >= 0.7:
+                    r2_color = "orange"
+                    r2_interpretation = "Хорошо"
+                elif r2 >= 0.5:
+                    r2_color = "orange"
+                    r2_interpretation = "Средне"
+                else:
+                    r2_color = "red"
+                    r2_interpretation = "Плохо"
+
+                st.markdown(f"""
+                <div style="padding: 10px; border-radius: 5px; margin-bottom: 10px; background-color: rgba(128, 128, 128, 0.1);">
+                    <h4 style="margin: 0;">R² (Коэффициент детерминации)</h4>
+                    <p style="font-size: 28px; margin: 5px 0; color: {r2_color};"><b>{r2:.4f}</b></p>
+                    <p style="margin: 0; font-size: 14px;">Качество: <b>{r2_interpretation}</b></p>
+                    <p style="margin: 5px 0; font-size: 12px; color: gray;">
+                        Показывает долю дисперсии целевой переменной, объясняемую моделью.
+                        Чем ближе к 1, тем лучше модель описывает данные.
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Остальные метрики
+                metrics_df = pd.DataFrame([
+                    {"Метрика": "MAE", "Значение": f"{metrics['MAE']:.4f}", "Описание": "Средняя абсолютная ошибка"},
+                    {"Метрика": "MSE", "Значение": f"{metrics['MSE']:.4f}", "Описание": "Средняя квадратичная ошибка"},
+                    {"Метрика": "RMSE", "Значение": f"{metrics['RMSE']:.4f}", "Описание": "Корень из MSE"}
+                ])
+
+                st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+
+        # Графики по центру друг под другом
+        if st.session_state.get('trained_model'):
+            model = st.session_state['trained_model']
+            selected_features = st.session_state.get("selected_features", [])
+            selected_aim = st.session_state.get("selected_aim_option")
+            filtered_df = st.session_state.get('filtered_df', df)
+
+            if selected_features and selected_aim:
+                X = filtered_df[selected_features]
+                y_true = filtered_df[selected_aim].values
+                y_pred = model.predict(X)
+
+                # Первый график
+                st.markdown("### Реальные vs Предсказанные значения")
+
+                fig1, ax1 = plt.subplots(figsize=(12, 5))
+
+                # Строим линии реальных и предсказанных значений
+                indices = np.arange(len(y_true))
+                ax1.plot(indices, y_true, label='Реальные значения', color='blue', linewidth=2, alpha=0.7)
+                ax1.plot(indices, y_pred, label='Предсказанные формулой', color='red', linewidth=2, alpha=0.7, linestyle='--')
+
+                ax1.set_xlabel('Номер записи', fontsize=11)
+                ax1.set_ylabel(f'{selected_aim}', fontsize=11)
+                ax1.set_title('Реальные значения vs Предсказания модели', fontsize=13)
+                ax1.legend(fontsize=10)
+                ax1.grid(True, alpha=0.3)
+
+                st.pyplot(fig1)
+                plt.close()
+
+                st.markdown("""
+                <p style="font-size: 12px; color: gray; text-align: center; margin-bottom: 30px;">
+                    Чем ближе красная линия к синей, тем точнее формула описывает целевой параметр
+                </p>
+                """, unsafe_allow_html=True)
+
+                # Второй график
+                st.markdown("### Качество предсказаний (R²)")
+
+                fig2, ax2 = plt.subplots(figsize=(12, 5))
+
+                # Scatter plot: реальные vs предсказанные
+                ax2.scatter(y_true, y_pred, alpha=0.6, edgecolors='k', linewidth=0.5, color='blue', s=50)
+
+                # Линия идеального предсказания y=x
+                min_val = min(y_true.min(), y_pred.min())
+                max_val = max(y_true.max(), y_pred.max())
+                ax2.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Идеальное предсказание')
+
+                ax2.set_xlabel('Реальные значения', fontsize=11)
+                ax2.set_ylabel('Предсказанные значения', fontsize=11)
+                ax2.set_title('Реальные vs Предсказанные значения', fontsize=13)
+                ax2.legend(fontsize=10)
+                ax2.grid(True, alpha=0.3)
+
+                st.pyplot(fig2)
+                plt.close()
+
+                st.markdown("""
+                <p style="font-size: 12px; color: gray; text-align: center;">
+                    Чем ближе точки к красной линии, тем выше R² и точнее модель
+                </p>
+                """, unsafe_allow_html=True)
